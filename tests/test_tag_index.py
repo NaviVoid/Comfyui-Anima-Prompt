@@ -209,6 +209,43 @@ def test_search_enforces_tag_scope():
     assert not index.search([], classification_hints=["Characters", "Body"])
 
 
+def test_promoted_composition_scopes_are_independently_configurable():
+    base = ("Visual characteristics", "Image composition and style")
+    image_composition = (*base, "Image composition")
+    index = TagIndex(
+        [
+            TagRecord("from_above", 0, 5, (*image_composition, "View Angle")),
+            TagRecord("border", 0, 4, (*image_composition, "Composition")),
+            TagRecord("sunlight", 0, 3, (*image_composition, "Lighting")),
+            TagRecord(
+                "perspective", 0, 2, (*image_composition, "Perspective/Depth")
+            ),
+            TagRecord("depth_of_field", 0, 1, (*image_composition, "Techniques")),
+        ]
+    )
+    terms = ["from_above", "border", "sunlight", "perspective", "depth_of_field"]
+
+    assert {
+        scope: {
+            candidate.record.tag
+            for candidate in index.search(terms, general_branches={scope})
+        }
+        for scope in (
+            "view_angle",
+            "composition",
+            "lighting",
+            "perspective_depth",
+            "composition_style",
+        )
+    } == {
+        "view_angle": {"from_above"},
+        "composition": {"border"},
+        "lighting": {"sunlight"},
+        "perspective_depth": {"perspective"},
+        "composition_style": {"depth_of_field"},
+    }
+
+
 def test_search_preserves_recalled_scope_coverage():
     index = TagIndex(
         [

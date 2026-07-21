@@ -43,6 +43,13 @@ def test_comfyui_package_registers_three_nodes():
     assert "general_misc" not in generator_inputs["optional"]
     assert generator_inputs["optional"]["general_weapons"][1]["default"] is True
     assert generator_inputs["optional"]["general_food"][1]["default"] is True
+    assert generator_inputs["optional"]["general_view_angle"][1]["default"] is True
+    assert generator_inputs["optional"]["general_composition"][1]["default"] is True
+    assert generator_inputs["optional"]["general_lighting"][1]["default"] is True
+    assert (
+        generator_inputs["optional"]["general_perspective_depth"][1]["default"]
+        is True
+    )
     assert "general_media_taxonomy" not in generator_inputs["optional"]
     assert "general_metatags" not in generator_inputs["optional"]
     assert generator_inputs["optional"]["include_character_tags"][1]["default"] is False

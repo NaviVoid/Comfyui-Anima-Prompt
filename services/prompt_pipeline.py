@@ -10,6 +10,7 @@ from .llm_provider import LLMProvider
 from .tag_index import (
     DEFAULT_GENERAL_BRANCHES,
     TagIndex,
+    TagRecord,
     tag_scope,
 )
 
@@ -72,14 +73,35 @@ class PromptPipeline:
             enabled_scopes.add("character")
         if include_species:
             enabled_scopes.add("species")
-        candidates = [
+        all_candidates = [
             record
             for record in self.tag_index.records.values()
             if tag_scope(record) in enabled_scopes
         ]
         rng = random.Random(seed)
-        rng.shuffle(candidates)
+        rng.shuffle(all_candidates)
+        candidates_by_scope: dict[str, list[TagRecord]] = {}
+        for record in all_candidates:
+            scope = tag_scope(record)
+            if scope is not None:
+                candidates_by_scope.setdefault(scope, []).append(record)
+
+        scope_count = len(candidates_by_scope)
+        if max_tags < scope_count:
+            raise ValueError(
+                f"max_tags={max_tags} cannot cover {scope_count} enabled tag scopes "
+                "with candidates"
+            )
+
+        guaranteed_tags = {
+            records[0].tag for records in candidates_by_scope.values()
+        }
+        candidates = [records[0] for records in candidates_by_scope.values()]
+        candidates.extend(
+            record for record in all_candidates if record.tag not in guaranteed_tags
+        )
         candidates = candidates[:100]
+        rng.shuffle(candidates)
 
         if len(candidates) < min_tags:
             raise ValueError(
@@ -87,7 +109,9 @@ class PromptPipeline:
                 f"cannot satisfy min_tags={min_tags}"
             )
 
-        target_tag_count = rng.randint(min_tags, min(max_tags, len(candidates)))
+        target_tag_count = rng.randint(
+            max(min_tags, scope_count), min(max_tags, len(candidates))
+        )
         selected: list[str] = []
         if candidates and max_tags:
             candidate_tags = {record.tag for record in candidates}
@@ -117,8 +141,29 @@ class PromptPipeline:
                     if isinstance(tag, str) and tag in candidate_tags
                 )
             )
+            selected_scopes = {
+                tag_scope(self.tag_index.records[tag]) for tag in selected
+            }
+            for scope, records in candidates_by_scope.items():
+                if scope not in selected_scopes:
+                    selected.append(records[0].tag)
+                    selected_scopes.add(scope)
+
             if len(selected) > target_tag_count:
-                selected = rng.sample(selected, target_tag_count)
+                protected: set[str] = set()
+                protected_scopes: set[str] = set()
+                for tag in selected:
+                    scope = tag_scope(self.tag_index.records[tag])
+                    if scope not in protected_scopes:
+                        protected.add(tag)
+                        protected_scopes.add(scope)
+                extras = [tag for tag in selected if tag not in protected]
+                kept_extras = set(
+                    rng.sample(extras, target_tag_count - len(protected))
+                )
+                selected = [
+                    tag for tag in selected if tag in protected or tag in kept_extras
+                ]
             elif len(selected) < target_tag_count:
                 remaining = [
                     record.tag for record in candidates if record.tag not in selected

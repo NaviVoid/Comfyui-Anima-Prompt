@@ -3,7 +3,7 @@ import json
 import pytest
 
 from services.prompt_pipeline import PromptPipeline
-from services.tag_index import TagIndex, TagRecord
+from services.tag_index import TagIndex, TagRecord, tag_scope
 
 
 class FakeProvider:
@@ -69,6 +69,9 @@ def test_generates_validated_tags_and_preserves_description_commas(index):
         min_sentences=2,
         max_sentences=2,
         seed=42,
+        general_branches=frozenset(
+            {"composition_style", "real_world", "body"}
+        ),
     )
 
     assert set(result.tag_group.split(",")) == {"solo", "long hair", "classroom"}
@@ -127,7 +130,11 @@ def test_description_receives_request_and_final_tags(index):
     )
 
     result = PromptPipeline(index).generate(
-        provider, "a girl in a classroom", min_tags=2, max_tags=2
+        provider,
+        "a girl in a classroom",
+        min_tags=2,
+        max_tags=2,
+        general_branches=frozenset({"composition_style"}),
     )
 
     assert result.tag_group == "solo,1girl"
@@ -191,6 +198,51 @@ def test_program_repairs_invalid_llm_selection():
     assert len(validated_tags) == len(set(validated_tags))
     assert "invented" not in validated_tags
     assert all(tag in index.records for tag in validated_tags)
+
+
+def test_guarantees_enabled_scope_coverage_before_description():
+    index = TagIndex(
+        [
+            TagRecord("body_a", 0, 6, ("Visual characteristics", "Body")),
+            TagRecord("body_b", 0, 5, ("Visual characteristics", "Body")),
+            TagRecord(
+                "classroom", 0, 4, ("Visual characteristics", "Real world")
+            ),
+            TagRecord(
+                "depth_of_field",
+                0,
+                3,
+                ("Visual characteristics", "Image composition and style"),
+            ),
+        ]
+    )
+    scopes = frozenset({"body", "real_world", "composition_style"})
+    provider = FakeProvider(
+        '{"tags":["body_a","body_b"]}',
+        '{"sentences":["A figure stands in a classroom."]}',
+    )
+
+    PromptPipeline(index).generate(
+        provider,
+        "a figure in a classroom",
+        min_tags=1,
+        max_tags=3,
+        general_branches=scopes,
+        seed=42,
+    )
+
+    candidate_tags = json.loads(provider.calls[0][1])["candidate_tags"]
+    validated_tags = json.loads(provider.calls[1][1])["validated_tags"]
+    assert {tag_scope(index.records[tag]) for tag in candidate_tags} == scopes
+    assert {tag_scope(index.records[tag]) for tag in validated_tags} == scopes
+    with pytest.raises(ValueError, match="max_tags=2 cannot cover 3"):
+        PromptPipeline(index).generate(
+            FakeProvider(),
+            "a figure",
+            min_tags=1,
+            max_tags=2,
+            general_branches=scopes,
+        )
 
 
 def test_limits_random_candidate_pool_to_100():
@@ -283,7 +335,11 @@ def test_retries_invalid_structured_response(index):
     )
 
     result = PromptPipeline(index).generate(
-        provider, "one figure", min_tags=1, max_tags=1
+        provider,
+        "one figure",
+        min_tags=1,
+        max_tags=1,
+        general_branches=frozenset({"composition_style"}),
     )
 
     assert result.tag_group == "solo"
@@ -339,8 +395,10 @@ def test_retries_when_description_has_too_few_sentences(index):
         provider,
         "one figure",
         min_tags=1,
+        max_tags=1,
         min_sentences=2,
         max_sentences=3,
+        general_branches=frozenset({"composition_style"}),
     )
 
     assert result.description == "First sentence. Second sentence."

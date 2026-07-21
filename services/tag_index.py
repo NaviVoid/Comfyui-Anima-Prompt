@@ -26,6 +26,39 @@ GENERAL_BRANCH_PATHS = {
     "body": (("Visual characteristics", "Body"),),
     "creatures": (("Visual characteristics", "Creatures"),),
     "games": (("Visual characteristics", "Games"),),
+    # Promoted composition paths must precede their broader parent path.
+    "view_angle": (
+        (
+            "Visual characteristics",
+            "Image composition and style",
+            "Image composition",
+            "View Angle",
+        ),
+    ),
+    "composition": (
+        (
+            "Visual characteristics",
+            "Image composition and style",
+            "Image composition",
+            "Composition",
+        ),
+    ),
+    "lighting": (
+        (
+            "Visual characteristics",
+            "Image composition and style",
+            "Image composition",
+            "Lighting",
+        ),
+    ),
+    "perspective_depth": (
+        (
+            "Visual characteristics",
+            "Image composition and style",
+            "Image composition",
+            "Perspective/Depth",
+        ),
+    ),
     "composition_style": (
         ("Visual characteristics", "Image composition and style"),
     ),

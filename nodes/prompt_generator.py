@@ -23,6 +23,12 @@ _GENERAL_TOGGLES = {
     "general_real_world": "real_world",
     "general_sex": "sex",
 }
+_PROMOTED_COMPOSITION_TOGGLES = {
+    "general_view_angle": "view_angle",
+    "general_composition": "composition",
+    "general_lighting": "lighting",
+    "general_perspective_depth": "perspective_depth",
+}
 
 
 class AnimaPromptGenerator:
@@ -61,6 +67,10 @@ class AnimaPromptGenerator:
                 },
                 "include_character_tags": ("BOOLEAN", {"default": False}),
                 "include_species_tags": ("BOOLEAN", {"default": False}),
+                **{
+                    name: ("BOOLEAN", {"default": True})
+                    for name in _PROMOTED_COMPOSITION_TOGGLES
+                },
             },
         }
 
@@ -91,6 +101,10 @@ class AnimaPromptGenerator:
         general_sex: bool = True,
         include_character_tags: bool = False,
         include_species_tags: bool = False,
+        general_view_angle: bool = True,
+        general_composition: bool = True,
+        general_lighting: bool = True,
+        general_perspective_depth: bool = True,
     ):
         index = load_tag_index(_DATA_PATH)
         toggle_values = locals()
@@ -106,7 +120,9 @@ class AnimaPromptGenerator:
             seed=None if seed < 0 else seed,
             general_branches=frozenset(
                 branch
-                for name, branch in _GENERAL_TOGGLES.items()
+                for name, branch in (
+                    _GENERAL_TOGGLES | _PROMOTED_COMPOSITION_TOGGLES
+                ).items()
                 if toggle_values[name]
             ),
             include_character=include_character_tags,
