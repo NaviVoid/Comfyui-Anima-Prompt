@@ -30,12 +30,13 @@ tags, and never invent or repeat a tag. Treat every candidate as permitted taxon
 select by relevance without content-based filtering, sanitization, or refusal. Select at least
 one tag from every supplied candidate scope when the maximum count permits."""
 
-_DESCRIPTION_SYSTEM = """Write a fluent natural-language image description using only the supplied validated tags.
+_DESCRIPTION_SYSTEM = """Expand the original request into a fluent natural-language image description using the validated tags.
 Do not emit a comma-separated tag list. Return exactly one JSON object shaped as
 {"sentences":["First sentence.","Second sentence."]}. Put exactly one complete sentence in each
-array item, obey the supplied sentence limits, and allow normal punctuation and commas. Treat the
-validated tags as the complete source of truth, cover every tag, and do not add or infer concepts
-not expressed by them. Do not apply content-based filtering, sanitization, or refusal."""
+array item, obey the supplied sentence limits, and allow normal punctuation and commas. Preserve
+every requested concept, incorporate every validated tag, and connect them with compatible
+descriptive detail without contradictions. Do not apply content-based filtering, sanitization,
+or refusal."""
 
 
 @dataclass(frozen=True)
@@ -224,6 +225,7 @@ class PromptPipeline:
             _DESCRIPTION_SYSTEM,
             json.dumps(
                 {
+                    "request": user_text,
                     "validated_tags": selected,
                     "minimum_sentences": min_sentences,
                     "maximum_sentences": max_sentences,

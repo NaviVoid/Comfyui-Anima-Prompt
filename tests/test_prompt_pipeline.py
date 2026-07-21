@@ -146,14 +146,14 @@ def test_selects_one_tag_from_each_recalled_scope(index):
         r"hair ribbon \(red\)",
     }
     description_request = json.loads(provider.calls[2][1])
-    assert "request" not in description_request
+    assert description_request["request"] == "a girl in a classroom"
     assert set(description_request["validated_tags"]) == {
         "solo",
         "long_hair",
         "classroom",
         "hair_ribbon_(red)",
     }
-    assert "only the supplied validated tags" in provider.calls[2][0]
+    assert "Expand the original request" in provider.calls[2][0]
 
 
 def test_searches_composition_analysis_when_search_terms_exist(index):
