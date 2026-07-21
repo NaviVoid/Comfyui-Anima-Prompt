@@ -18,6 +18,7 @@ class LLMProvider(ABC):
         temperature: float,
         max_tokens: int,
         seed: int | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> str:
         raise NotImplementedError
 
@@ -63,6 +64,7 @@ class LocalLlamaProvider(LLMProvider):
         temperature: float,
         max_tokens: int,
         seed: int | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
             "messages": [
@@ -74,6 +76,11 @@ class LocalLlamaProvider(LLMProvider):
         }
         if seed is not None:
             kwargs["seed"] = seed
+        if response_schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_object",
+                "schema": response_schema,
+            }
 
         try:
             with self._lock:
@@ -143,6 +150,7 @@ class OpenAIProvider(LLMProvider):
         temperature: float,
         max_tokens: int,
         seed: int | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> str:
         kwargs: dict[str, Any] = {
             "model": self.model,
@@ -155,6 +163,15 @@ class OpenAIProvider(LLMProvider):
         }
         if seed is not None:
             kwargs["seed"] = seed
+        if response_schema is not None:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": response_schema.get("title", "anima_response"),
+                    "strict": True,
+                    "schema": response_schema,
+                },
+            }
         try:
             response = self._get_client().chat.completions.create(**kwargs)
             return _message_text(response)

@@ -112,3 +112,80 @@ def test_openai_loader_accepts_direct_key(monkeypatch):
     provider._get_client()
 
     assert captured["api_key"] == "direct-key"
+
+
+def test_local_provider_passes_json_schema(monkeypatch):
+    captured = {}
+
+    class FakeLlama:
+        def __init__(self, **options):
+            pass
+
+        def create_chat_completion(self, **options):
+            captured.update(options)
+            return {"choices": [{"message": {"content": '{"tags":[]}'}}]}
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(sys.modules, "llama_cpp", SimpleNamespace(Llama=FakeLlama))
+    module = load_package()
+    provider_module = sys.modules[f"{module.__name__}.services.llm_provider"]
+    provider = provider_module.LocalLlamaProvider(
+        "model.gguf",
+        context_length=2048,
+        gpu_layers=-1,
+        threads=4,
+        batch_size=128,
+    )
+    schema = {"title": "tags", "type": "object"}
+
+    provider.complete(
+        "system",
+        "user",
+        temperature=0.0,
+        max_tokens=64,
+        response_schema=schema,
+    )
+
+    assert captured["response_format"] == {
+        "type": "json_object",
+        "schema": schema,
+    }
+
+
+def test_openai_provider_passes_strict_json_schema():
+    module = load_package()
+    provider_module = sys.modules[f"{module.__name__}.services.llm_provider"]
+    provider = provider_module.OpenAIProvider(
+        "test-model",
+        api_key_env="OPENAI_API_KEY",
+        api_key="test-key",
+        timeout=10.0,
+        max_retries=1,
+    )
+    captured = {}
+
+    def create(**options):
+        captured.update(options)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content='{"tags":[]}'))]
+        )
+
+    provider._client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    schema = {"title": "tags", "type": "object"}
+
+    provider.complete(
+        "system",
+        "user",
+        temperature=0.0,
+        max_tokens=64,
+        response_schema=schema,
+    )
+
+    assert captured["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {"name": "tags", "strict": True, "schema": schema},
+    }

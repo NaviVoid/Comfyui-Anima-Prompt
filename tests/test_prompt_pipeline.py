@@ -85,6 +85,24 @@ def test_generates_validated_tags_and_preserves_description_commas(index):
     selection_request = json.loads(provider.calls[0][1])
     assert selection_request["request"] == "a girl in a classroom"
     assert selection_request["target_tag_count"] == 3
+    assert set(selection_request["candidate_tags_by_scope"]) == {
+        "composition_style",
+        "real_world",
+        "body",
+    }
+    assert provider.calls[0][2]["temperature"] == 0.0
+    assert provider.calls[0][2]["max_tokens"] == 100
+    selection_schema = provider.calls[0][2]["response_schema"]
+    assert selection_schema["title"] == "anima_tag_selection"
+    assert selection_schema["properties"]["tags"]["minItems"] == 3
+    assert selection_schema["properties"]["tags"]["maxItems"] == 3
+    assert provider.calls[1][2]["temperature"] == 0.3
+    assert provider.calls[1][2]["max_tokens"] == 256
+    description_schema = provider.calls[1][2]["response_schema"]
+    assert description_schema["title"] == "anima_description"
+    assert description_schema["properties"]["sentences"]["minItems"] == 2
+    assert description_schema["properties"]["sentences"]["maxItems"] == 2
+    assert description_schema["properties"]["sentences"]["items"]["pattern"]
     assert len(provider.calls) == 2
 
 
@@ -231,9 +249,11 @@ def test_guarantees_enabled_scope_coverage_before_description():
         seed=42,
     )
 
-    candidate_tags = json.loads(provider.calls[0][1])["candidate_tags"]
+    candidate_tags_by_scope = json.loads(provider.calls[0][1])[
+        "candidate_tags_by_scope"
+    ]
     validated_tags = json.loads(provider.calls[1][1])["validated_tags"]
-    assert {tag_scope(index.records[tag]) for tag in candidate_tags} == scopes
+    assert set(candidate_tags_by_scope) == scopes
     assert {tag_scope(index.records[tag]) for tag in validated_tags} == scopes
     with pytest.raises(ValueError, match="max_tags=2 cannot cover 3"):
         PromptPipeline(index).generate(
@@ -271,7 +291,88 @@ def test_limits_random_candidate_pool_to_100():
         general_branches=frozenset({"composition_style"}),
     )
 
-    assert len(json.loads(provider.calls[0][1])["candidate_tags"]) == 100
+    candidate_tags_by_scope = json.loads(provider.calls[0][1])[
+        "candidate_tags_by_scope"
+    ]
+    assert sum(map(len, candidate_tags_by_scope.values())) == 100
+
+
+def test_balances_candidate_pool_across_scopes():
+    index = TagIndex(
+        [
+            TagRecord(
+                f"body_{number}", 0, 200 - number, ("Visual characteristics", "Body")
+            )
+            for number in range(200)
+        ]
+        + [
+            TagRecord(
+                f"light_{number}",
+                0,
+                10 - number,
+                (
+                    "Visual characteristics",
+                    "Image composition and style",
+                    "Image composition",
+                    "Lighting",
+                ),
+            )
+            for number in range(4)
+        ]
+    )
+    provider = FakeProvider(
+        '{"tags":[]}',
+        '{"sentences":["A body is shown under deliberate lighting."]}',
+    )
+
+    PromptPipeline(index).generate(
+        provider,
+        "unmatched query xyz",
+        min_tags=2,
+        max_tags=2,
+        seed=42,
+        general_branches=frozenset({"body", "lighting"}),
+    )
+
+    candidate_tags_by_scope = json.loads(provider.calls[0][1])[
+        "candidate_tags_by_scope"
+    ]
+    assert len(candidate_tags_by_scope["lighting"]) == 4
+    assert len(candidate_tags_by_scope["body"]) == 96
+
+
+def test_prioritizes_explicit_tag_matches_without_losing_scope_balance():
+    body = ("Visual characteristics", "Body")
+    real_world = ("Visual characteristics", "Real world")
+    index = TagIndex(
+        [TagRecord("long_hair", 0, 1000, body)]
+        + [TagRecord(f"body_{number}", 0, 500 - number, body) for number in range(100)]
+        + [TagRecord("library", 0, 1000, real_world)]
+        + [
+            TagRecord(f"place_{number}", 0, 500 - number, real_world)
+            for number in range(100)
+        ]
+    )
+    provider = FakeProvider(
+        '{"tags":[]}',
+        '{"sentences":["A long-haired reader is in a library."]}',
+    )
+
+    PromptPipeline(index).generate(
+        provider,
+        "long hair in a library",
+        min_tags=2,
+        max_tags=2,
+        seed=42,
+        general_branches=frozenset({"body", "real_world"}),
+    )
+
+    candidate_tags_by_scope = json.loads(provider.calls[0][1])[
+        "candidate_tags_by_scope"
+    ]
+    assert "long_hair" in candidate_tags_by_scope["body"]
+    assert "library" in candidate_tags_by_scope["real_world"]
+    assert all(len(tags) >= 25 for tags in candidate_tags_by_scope.values())
 
 
 def test_randomizes_supplemental_candidates_by_seed():
@@ -296,7 +397,11 @@ def test_randomizes_supplemental_candidates_by_seed():
             general_branches=frozenset({"body"}),
         )
         request = json.loads(provider.calls[0][1])
-        return result.tag_group, request["target_tag_count"], request["candidate_tags"]
+        candidates = tuple(
+            (scope, tuple(tags))
+            for scope, tags in request["candidate_tags_by_scope"].items()
+        )
+        return result.tag_group, request["target_tag_count"], candidates
 
     assert generate(7) == generate(7)
     results = [generate(seed) for seed in range(10)]
@@ -398,6 +503,27 @@ def test_retries_when_description_has_too_few_sentences(index):
         max_tags=1,
         min_sentences=2,
         max_sentences=3,
+        general_branches=frozenset({"composition_style"}),
+    )
+
+    assert result.description == "First sentence. Second sentence."
+    assert len(provider.calls) == 3
+
+
+def test_retries_when_description_item_contains_multiple_sentences(index):
+    provider = FakeProvider(
+        '{"tags":["solo"]}',
+        '{"sentences":["First sentence. Extra sentence.","Second sentence."]}',
+        '{"sentences":["First sentence.","Second sentence."]}',
+    )
+
+    result = PromptPipeline(index).generate(
+        provider,
+        "one figure",
+        min_tags=1,
+        max_tags=1,
+        min_sentences=2,
+        max_sentences=2,
         general_branches=frozenset({"composition_style"}),
     )
 

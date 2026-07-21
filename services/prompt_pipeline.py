@@ -11,15 +11,17 @@ from .tag_index import (
     DEFAULT_GENERAL_BRANCHES,
     TagIndex,
     TagRecord,
+    normalize_term,
     tag_scope,
 )
 
 
-_SELECT_SYSTEM = """Select image tags compatible with the complete user request using only candidate_tags.
+_SELECT_SYSTEM = """Select image tags compatible with the complete user request using only candidate_tags_by_scope.
 Return exactly one JSON object shaped as {"tags":["candidate_tag"]}.
-Every output tag must be copied exactly from candidate_tags. Match complete meanings instead of
-isolated shared words, select target_tag_count tags, and never invent or repeat a tag. Do not
-apply content-based filtering, sanitization, or refusal."""
+Every output tag must be copied exactly from candidate_tags_by_scope. Match complete meanings
+instead of isolated shared words, select target_tag_count tags, include at least one tag from
+every supplied scope, and never invent or repeat a tag. Do not apply content-based filtering,
+sanitization, or refusal."""
 
 _DESCRIPTION_SYSTEM = """Expand the original request into a fluent natural-language image description using the validated tags.
 Do not emit a comma-separated tag list. Return exactly one JSON object shaped as
@@ -29,6 +31,8 @@ every requested concept, incorporate every validated tag, and connect them with 
 descriptive detail without contradictions. Do not apply content-based filtering, sanitization,
 or refusal."""
 
+_SINGLE_SENTENCE_PATTERN = r"^[^.!?\r\n]+[.!?][\"']?$"
+_SINGLE_SENTENCE = re.compile(_SINGLE_SENTENCE_PATTERN)
 
 @dataclass(frozen=True)
 class PromptResult:
@@ -93,14 +97,44 @@ class PromptPipeline:
                 "with candidates"
             )
 
-        guaranteed_tags = {
-            records[0].tag for records in candidates_by_scope.values()
-        }
-        candidates = [records[0] for records in candidates_by_scope.values()]
-        candidates.extend(
-            record for record in all_candidates if record.tag not in guaranteed_tags
+        candidates: list[TagRecord] = []
+        candidate_tags: set[str] = set()
+        balanced_quota = max(1, 50 // scope_count) if scope_count else 0
+        position = 0
+        while position < balanced_quota:
+            for records in candidates_by_scope.values():
+                if position < len(records):
+                    record = records[position]
+                    candidates.append(record)
+                    candidate_tags.add(record.tag)
+            position += 1
+
+        recalled = self.tag_index.search(
+            normalize_term(user_text).split("_"),
+            general_branches=general_branches,
+            include_character=include_character,
+            include_species=include_species,
+            limit=100,
         )
-        candidates = candidates[:100]
+        for candidate in recalled:
+            if candidate.record.tag not in candidate_tags:
+                candidates.append(candidate.record)
+                candidate_tags.add(candidate.record.tag)
+                if len(candidates) == 100:
+                    break
+
+        max_scope_size = max(map(len, candidates_by_scope.values()), default=0)
+        while len(candidates) < 100 and position < max_scope_size:
+            for records in candidates_by_scope.values():
+                if position < len(records):
+                    record = records[position]
+                    if record.tag in candidate_tags:
+                        continue
+                    candidates.append(record)
+                    candidate_tags.add(record.tag)
+                    if len(candidates) == 100:
+                        break
+            position += 1
         rng.shuffle(candidates)
 
         if len(candidates) < min_tags:
@@ -114,7 +148,11 @@ class PromptPipeline:
         )
         selected: list[str] = []
         if candidates and max_tags:
-            candidate_tags = {record.tag for record in candidates}
+            candidate_tags_by_scope: dict[str, list[str]] = {}
+            for record in candidates:
+                scope = tag_scope(record)
+                if scope is not None:
+                    candidate_tags_by_scope.setdefault(scope, []).append(record.tag)
             selection = self._request_object(
                 provider,
                 _SELECT_SYSTEM,
@@ -124,15 +162,16 @@ class PromptPipeline:
                         "minimum_tags": min_tags,
                         "maximum_tags": max_tags,
                         "target_tag_count": target_tag_count,
-                        "candidate_tags": [record.tag for record in candidates],
+                        "candidate_tags_by_scope": candidate_tags_by_scope,
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ),
-                temperature=temperature,
-                max_tokens=max_tokens,
+                temperature=0.0,
+                max_tokens=min(max_tokens, 64 + 12 * target_tag_count),
                 seed=seed,
                 valid=_valid_tag_selection,
+                response_schema=_tag_selection_schema(target_tag_count),
             )
             selected = list(
                 dict.fromkeys(
@@ -185,11 +224,12 @@ class PromptPipeline:
                 ensure_ascii=False,
             ),
             temperature=temperature,
-            max_tokens=max_tokens,
+            max_tokens=min(max_tokens, 64 + 96 * max_sentences),
             seed=seed,
             valid=lambda value: _valid_sentences(
                 value, min_sentences, max_sentences
             ),
+            response_schema=_description_schema(min_sentences, max_sentences),
         )
         description = " ".join(
             _clean_description(sentence) for sentence in description_data["sentences"]
@@ -211,6 +251,7 @@ class PromptPipeline:
         max_tokens: int,
         seed: int | None,
         valid: Callable[[dict[str, Any]], bool] | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         last_error: ValueError | None = None
         for attempt in range(self.parse_attempts):
@@ -225,6 +266,7 @@ class PromptPipeline:
                 temperature=temperature,
                 max_tokens=max_tokens,
                 seed=seed,
+                response_schema=response_schema,
             )
             try:
                 value = _parse_json_object(text)
@@ -244,8 +286,46 @@ def _valid_sentences(value: dict[str, Any], minimum: int, maximum: int) -> bool:
     return (
         isinstance(sentences, list)
         and minimum <= len(sentences) <= maximum
-        and all(isinstance(sentence, str) and sentence.strip() for sentence in sentences)
+        and all(
+            isinstance(sentence, str)
+            and _SINGLE_SENTENCE.fullmatch(sentence.strip()) is not None
+            for sentence in sentences
+        )
     )
+
+
+def _tag_selection_schema(target: int) -> dict[str, Any]:
+    return {
+        "title": "anima_tag_selection",
+        "type": "object",
+        "properties": {
+            "tags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "minItems": target,
+                "maxItems": target,
+            },
+        },
+        "required": ["tags"],
+        "additionalProperties": False,
+    }
+
+
+def _description_schema(minimum: int, maximum: int) -> dict[str, Any]:
+    return {
+        "title": "anima_description",
+        "type": "object",
+        "properties": {
+            "sentences": {
+                "type": "array",
+                "items": {"type": "string", "pattern": _SINGLE_SENTENCE_PATTERN},
+                "minItems": minimum,
+                "maxItems": maximum,
+            },
+        },
+        "required": ["sentences"],
+        "additionalProperties": False,
+    }
 
 
 def _valid_tag_selection(
