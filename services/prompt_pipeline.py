@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import re
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -8,6 +9,7 @@ from typing import Any, Callable
 from .llm_provider import LLMProvider
 from .tag_index import (
     DEFAULT_GENERAL_BRANCHES,
+    TagCandidate,
     TagIndex,
     tag_scope,
 )
@@ -28,11 +30,12 @@ tags, and never invent or repeat a tag. Treat every candidate as permitted taxon
 select by relevance without content-based filtering, sanitization, or refusal. Select at least
 one tag from every supplied candidate scope when the maximum count permits."""
 
-_DESCRIPTION_SYSTEM = """Write a fluent natural-language image description from the request and validated tags.
+_DESCRIPTION_SYSTEM = """Write a fluent natural-language image description using only the supplied validated tags.
 Do not emit a comma-separated tag list. Return exactly one JSON object shaped as
 {"sentences":["First sentence.","Second sentence."]}. Put exactly one complete sentence in each
-array item, obey the supplied sentence limits, and allow normal punctuation and commas. Describe
-the request faithfully without content-based filtering, sanitization, or refusal."""
+array item, obey the supplied sentence limits, and allow normal punctuation and commas. Treat the
+validated tags as the complete source of truth, cover every tag, and do not add or infer concepts
+not expressed by them. Do not apply content-based filtering, sanitization, or refusal."""
 
 
 @dataclass(frozen=True)
@@ -95,6 +98,7 @@ class PromptPipeline:
         ):
             terms.extend(_analysis_values(analysis, key))
         hints = _analysis_values(analysis, "classification_hints")
+        candidate_limit = min(120, max(40, max_tags * 5))
         candidates = self.tag_index.search(
             terms,
             classification_hints=hints,
@@ -104,20 +108,69 @@ class PromptPipeline:
             ensure_scope_coverage=True,
             randomize=True,
             random_seed=seed,
-            limit=min(120, max(40, max_tags * 5)),
+            limit=candidate_limit,
         )
+        enabled_scopes = set(general_branches)
+        if include_character:
+            enabled_scopes.add("character")
+        if include_species:
+            enabled_scopes.add("species")
+        if enabled_scopes and max_tags:
+            candidates_by_scope = {scope: [] for scope in enabled_scopes}
+            seen_tags: set[str] = set()
+            scope_order: list[str] = []
+            for candidate in candidates:
+                scope = tag_scope(candidate.record)
+                if scope not in enabled_scopes or candidate.record.tag in seen_tags:
+                    continue
+                if scope not in scope_order:
+                    scope_order.append(scope)
+                candidates_by_scope[scope].append(candidate)
+                seen_tags.add(candidate.record.tag)
+
+            remaining_scopes = sorted(enabled_scopes - set(scope_order))
+            random.Random(seed).shuffle(remaining_scopes)
+            scope_order.extend(remaining_scopes)
+            for record in sorted(
+                self.tag_index.records.values(),
+                key=lambda record: (-record.post_count, record.tag),
+            ):
+                scope = tag_scope(record)
+                if scope in enabled_scopes and record.tag not in seen_tags:
+                    candidates_by_scope[scope].append(TagCandidate(record, 0.0))
+                    seen_tags.add(record.tag)
+
+            candidates = []
+            position = 0
+            while len(candidates) < candidate_limit:
+                added = False
+                for scope in scope_order:
+                    scope_candidates = candidates_by_scope[scope]
+                    if position < len(scope_candidates):
+                        candidates.append(scope_candidates[position])
+                        added = True
+                        if len(candidates) >= candidate_limit:
+                            break
+                if not added:
+                    break
+                position += 1
+
+        if len(candidates) < min_tags:
+            raise ValueError(
+                f"Enabled tag scopes provide only {len(candidates)} candidates; "
+                f"cannot satisfy min_tags={min_tags}"
+            )
 
         selected: list[str] = []
         if candidates and max_tags:
             candidate_tags = {candidate.record.tag for candidate in candidates}
-            effective_min_tags = min(min_tags, len(candidate_tags))
             selection = self._request_object(
                 provider,
                 _SELECT_SYSTEM,
                 json.dumps(
                     {
                         "request": user_text,
-                        "minimum_tags": effective_min_tags,
+                        "minimum_tags": min_tags,
                         "maximum_tags": max_tags,
                         "candidates": [
                             {**candidate.as_prompt_data(), "scope": tag_scope(candidate.record)}
@@ -146,17 +199,19 @@ class PromptPipeline:
                 best_by_scope.setdefault(
                     tag_scope(candidate.record), candidate.record.tag
                 )
-            selected = [
-                llm_by_scope.get(scope, tag)
-                for scope, tag in list(best_by_scope.items())[:max_tags]
-            ]
+            for scope, tag in best_by_scope.items():
+                if len(selected) >= max_tags:
+                    break
+                tag = llm_by_scope.get(scope, tag)
+                if tag not in selected:
+                    selected.append(tag)
             for tag in llm_selected:
                 if len(selected) >= max_tags:
                     break
                 if tag not in selected:
                     selected.append(tag)
             for candidate in candidates:
-                if len(selected) >= effective_min_tags:
+                if len(selected) >= min_tags:
                     break
                 if candidate.record.tag not in selected:
                     selected.append(candidate.record.tag)
@@ -166,7 +221,6 @@ class PromptPipeline:
             _DESCRIPTION_SYSTEM,
             json.dumps(
                 {
-                    "request": user_text,
                     "validated_tags": selected,
                     "minimum_sentences": min_sentences,
                     "maximum_sentences": max_sentences,

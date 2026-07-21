@@ -3,7 +3,7 @@ import json
 import pytest
 
 from services.prompt_pipeline import PromptPipeline
-from services.tag_index import TagIndex, TagRecord
+from services.tag_index import TagIndex, TagRecord, tag_scope
 
 
 class FakeProvider:
@@ -79,7 +79,7 @@ def test_generates_validated_tags_and_preserves_description_commas(index):
         seed=42,
     )
 
-    assert set(result.tag_group.split(",")) == {"solo", "1girl", "classroom"}
+    assert set(result.tag_group.split(",")) == {"solo", "long hair", "classroom"}
     assert result.description == (
         "A girl stands in a classroom, looking toward the window. "
         "Soft daylight frames her silhouette."
@@ -97,7 +97,12 @@ def test_generates_description_when_no_candidate_exists(index):
         '{"sentences":["An abstract shape floats in empty space."]}',
     )
 
-    result = PromptPipeline(index).generate(provider, "an unknown abstract shape")
+    result = PromptPipeline(index).generate(
+        provider,
+        "an unknown abstract shape",
+        min_tags=0,
+        general_branches=frozenset(),
+    )
 
     assert result.tag_group == ""
     assert result.prompt == result.description
@@ -141,12 +146,14 @@ def test_selects_one_tag_from_each_recalled_scope(index):
         r"hair ribbon \(red\)",
     }
     description_request = json.loads(provider.calls[2][1])
+    assert "request" not in description_request
     assert set(description_request["validated_tags"]) == {
         "solo",
         "long_hair",
         "classroom",
         "hair_ribbon_(red)",
     }
+    assert "only the supplied validated tags" in provider.calls[2][0]
 
 
 def test_searches_composition_analysis_when_search_terms_exist(index):
@@ -163,6 +170,68 @@ def test_searches_composition_analysis_when_search_terms_exist(index):
     assert set(result.tag_group.split(",")) == {"solo", "classroom"}
 
 
+def test_fills_final_minimum_from_all_enabled_scopes():
+    composition = ("Visual characteristics", "Image composition and style")
+    index = TagIndex(
+        [
+            TagRecord("solo", 0, 500, composition),
+            TagRecord("1girl", 0, 400, composition),
+            TagRecord("full_body", 0, 300, composition),
+            TagRecord("simple_background", 0, 200, composition),
+            TagRecord("soft_lighting", 0, 100, composition),
+            TagRecord(
+                "classroom", 0, 90, ("Visual characteristics", "Real world")
+            ),
+            TagRecord("long_hair", 0, 80, ("Visual characteristics", "Body")),
+        ]
+    )
+    provider = FakeProvider(
+        '{"search_terms":["classroom"]}',
+        '{"tags":["classroom"]}',
+        '{"sentences":["A full-body portrait is set in a classroom."]}',
+    )
+
+    result = PromptPipeline(index).generate(
+        provider,
+        "a girl",
+        min_tags=5,
+        max_tags=5,
+        seed=42,
+        general_branches=frozenset({"composition_style", "real_world", "body"}),
+    )
+
+    assert len(result.tag_group.split(",")) == 5
+    validated_tags = json.loads(provider.calls[2][1])["validated_tags"]
+    assert "classroom" in validated_tags
+    assert {tag_scope(index.records[tag]) for tag in validated_tags} == {
+        "composition_style",
+        "real_world",
+        "body",
+    }
+
+
+def test_rejects_unachievable_tag_minimum():
+    index = TagIndex(
+        [
+            TagRecord(
+                "solo",
+                0,
+                1,
+                ("Visual characteristics", "Image composition and style"),
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="cannot satisfy min_tags=2"):
+        PromptPipeline(index).generate(
+            FakeProvider('{"search_terms":[]}'),
+            "a figure",
+            min_tags=2,
+            max_tags=2,
+            general_branches=frozenset({"composition_style"}),
+        )
+
+
 def test_retries_invalid_structured_response(index):
     provider = FakeProvider(
         "not json",
@@ -171,7 +240,9 @@ def test_retries_invalid_structured_response(index):
         '{"sentences":["A single figure."]}',
     )
 
-    result = PromptPipeline(index).generate(provider, "one figure")
+    result = PromptPipeline(index).generate(
+        provider, "one figure", min_tags=1, max_tags=1
+    )
 
     assert result.tag_group == "solo"
     assert len(provider.calls) == 4
@@ -208,6 +279,7 @@ def test_retries_when_description_has_too_few_sentences(index):
     result = PromptPipeline(index).generate(
         provider,
         "one figure",
+        min_tags=1,
         min_sentences=2,
         max_sentences=3,
     )
