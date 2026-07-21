@@ -3,7 +3,7 @@ import json
 import pytest
 
 from services.prompt_pipeline import PromptPipeline
-from services.tag_index import TagIndex, TagRecord, tag_scope
+from services.tag_index import TagIndex, TagRecord
 
 
 class FakeProvider:
@@ -50,15 +50,7 @@ def index():
 
 def test_generates_validated_tags_and_preserves_description_commas(index):
     provider = FakeProvider(
-        "```json\n"
-        + json.dumps(
-            {
-                "search_terms": ["solo", "1girl", "classroom"],
-                "classification_hints": ["Backgrounds"],
-            }
-        )
-        + "\n```",
-        json.dumps({"tags": ["solo", "invented_tag", "solo"]}),
+        json.dumps({"tags": ["solo", "long_hair", "classroom"]}),
         json.dumps(
             {
                 "sentences": [
@@ -87,13 +79,14 @@ def test_generates_validated_tags_and_preserves_description_commas(index):
     assert result.prompt == f"{result.tag_group},{result.description}"
     assert all(call[2]["seed"] == 42 for call in provider.calls)
     assert all("content-based filtering" in call[0] for call in provider.calls)
-    assert json.loads(provider.calls[1][1])["minimum_tags"] == 3
-    assert len(provider.calls) == 3
+    selection_request = json.loads(provider.calls[0][1])
+    assert selection_request["request"] == "a girl in a classroom"
+    assert selection_request["target_tag_count"] == 3
+    assert len(provider.calls) == 2
 
 
 def test_generates_description_when_no_candidate_exists(index):
     provider = FakeProvider(
-        '{"search_terms":["zzzz_unknown"]}',
         '{"sentences":["An abstract shape floats in empty space."]}',
     )
 
@@ -106,12 +99,11 @@ def test_generates_description_when_no_candidate_exists(index):
 
     assert result.tag_group == ""
     assert result.prompt == result.description
-    assert len(provider.calls) == 2
+    assert len(provider.calls) == 1
 
 
 def test_formats_tag_underscores_and_parentheses(index):
     provider = FakeProvider(
-        '{"search_terms":["hair_ribbon_(red)"]}',
         '{"tags":["hair_ribbon_(red)"]}',
         '{"sentences":["A red ribbon decorates her hair."]}',
     )
@@ -128,49 +120,44 @@ def test_formats_tag_underscores_and_parentheses(index):
     assert result.prompt.startswith(r"hair ribbon \(red\),")
 
 
-def test_selects_one_tag_from_each_recalled_scope(index):
+def test_description_receives_request_and_final_tags(index):
     provider = FakeProvider(
-        '{"search_terms":["solo","long_hair","classroom","hair_ribbon_(red)"]}',
         '{"tags":["solo","1girl"]}',
         '{"sentences":["A girl with long hair stands in a classroom."]}',
     )
 
     result = PromptPipeline(index).generate(
-        provider, "a girl in a classroom", min_tags=1, max_tags=4
+        provider, "a girl in a classroom", min_tags=2, max_tags=2
     )
 
-    assert set(result.tag_group.split(",")) == {
-        "solo",
-        "long hair",
-        "classroom",
-        r"hair ribbon \(red\)",
-    }
-    description_request = json.loads(provider.calls[2][1])
+    assert result.tag_group == "solo,1girl"
+    description_request = json.loads(provider.calls[1][1])
     assert description_request["request"] == "a girl in a classroom"
-    assert set(description_request["validated_tags"]) == {
-        "solo",
-        "long_hair",
-        "classroom",
-        "hair_ribbon_(red)",
-    }
-    assert "Expand the original request" in provider.calls[2][0]
+    assert description_request["validated_tags"] == ["solo", "1girl"]
+    assert "Expand the original request" in provider.calls[1][0]
 
 
-def test_searches_composition_analysis_when_search_terms_exist(index):
+def test_selection_receives_complete_request(index):
     provider = FakeProvider(
-        '{"search_terms":["classroom"],"composition":["solo"]}',
-        '{"tags":["classroom"]}',
+        '{"tags":["classroom","solo"]}',
         '{"sentences":["A lone subject stands in a classroom."]}',
     )
 
     result = PromptPipeline(index).generate(
-        provider, "a lone subject in a classroom", min_tags=1, max_tags=2
+        provider,
+        "a lone subject in a classroom",
+        min_tags=2,
+        max_tags=2,
+        general_branches=frozenset({"composition_style", "real_world"}),
     )
 
     assert set(result.tag_group.split(",")) == {"solo", "classroom"}
+    assert json.loads(provider.calls[0][1])["request"] == (
+        "a lone subject in a classroom"
+    )
 
 
-def test_fills_final_minimum_from_all_enabled_scopes():
+def test_program_repairs_invalid_llm_selection():
     composition = ("Visual characteristics", "Image composition and style")
     index = TagIndex(
         [
@@ -186,28 +173,53 @@ def test_fills_final_minimum_from_all_enabled_scopes():
         ]
     )
     provider = FakeProvider(
-        '{"search_terms":["classroom"]}',
-        '{"tags":["classroom"]}',
+        '{"tags":["classroom","classroom","invented","solo","1girl","full_body","simple_background","soft_lighting"]}',
         '{"sentences":["A full-body portrait is set in a classroom."]}',
     )
 
     result = PromptPipeline(index).generate(
         provider,
         "a girl",
-        min_tags=5,
-        max_tags=5,
+        min_tags=4,
+        max_tags=4,
         seed=42,
         general_branches=frozenset({"composition_style", "real_world", "body"}),
     )
 
-    assert len(result.tag_group.split(",")) == 5
-    validated_tags = json.loads(provider.calls[2][1])["validated_tags"]
-    assert "classroom" in validated_tags
-    assert {tag_scope(index.records[tag]) for tag in validated_tags} == {
-        "composition_style",
-        "real_world",
-        "body",
-    }
+    validated_tags = json.loads(provider.calls[1][1])["validated_tags"]
+    assert len(validated_tags) == 4
+    assert len(validated_tags) == len(set(validated_tags))
+    assert "invented" not in validated_tags
+    assert all(tag in index.records for tag in validated_tags)
+
+
+def test_limits_random_candidate_pool_to_100():
+    index = TagIndex(
+        [
+            TagRecord(
+                f"style_{number}",
+                0,
+                100 - number,
+                ("Visual characteristics", "Image composition and style"),
+            )
+            for number in range(120)
+        ]
+    )
+    provider = FakeProvider(
+        '{"tags":[]}',
+        '{"sentences":["A figure is shown."]}',
+    )
+
+    PromptPipeline(index).generate(
+        provider,
+        "a figure",
+        min_tags=0,
+        max_tags=10,
+        seed=42,
+        general_branches=frozenset({"composition_style"}),
+    )
+
+    assert len(json.loads(provider.calls[0][1])["candidate_tags"]) == 100
 
 
 def test_randomizes_supplemental_candidates_by_seed():
@@ -220,7 +232,6 @@ def test_randomizes_supplemental_candidates_by_seed():
 
     def generate(seed):
         provider = FakeProvider(
-            '{"search_terms":[]}',
             '{"tags":[]}',
             '{"sentences":["A body is shown."]}',
         )
@@ -228,15 +239,18 @@ def test_randomizes_supplemental_candidates_by_seed():
             provider,
             "a figure",
             min_tags=1,
-            max_tags=1,
+            max_tags=4,
             seed=seed,
             general_branches=frozenset({"body"}),
         )
-        candidates = json.loads(provider.calls[1][1])["candidates"]
-        return result.tag_group, [candidate["tag"] for candidate in candidates]
+        request = json.loads(provider.calls[0][1])
+        return result.tag_group, request["target_tag_count"], request["candidate_tags"]
 
     assert generate(7) == generate(7)
-    assert generate(7) != generate(8)
+    results = [generate(seed) for seed in range(10)]
+    assert all(1 <= target <= 4 for _, target, _ in results)
+    assert len({target for _, target, _ in results}) > 1
+    assert len({tags for tags, _, _ in results}) > 1
 
 
 def test_rejects_unachievable_tag_minimum():
@@ -253,7 +267,7 @@ def test_rejects_unachievable_tag_minimum():
 
     with pytest.raises(ValueError, match="cannot satisfy min_tags=2"):
         PromptPipeline(index).generate(
-            FakeProvider('{"search_terms":[]}'),
+            FakeProvider(),
             "a figure",
             min_tags=2,
             max_tags=2,
@@ -264,7 +278,6 @@ def test_rejects_unachievable_tag_minimum():
 def test_retries_invalid_structured_response(index):
     provider = FakeProvider(
         "not json",
-        '{"search_terms":["solo"]}',
         '{"tags":["solo"]}',
         '{"sentences":["A single figure."]}',
     )
@@ -274,8 +287,26 @@ def test_retries_invalid_structured_response(index):
     )
 
     assert result.tag_group == "solo"
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 3
     assert "previous response was invalid" in provider.calls[1][1]
+
+
+def test_supplements_invalid_tag_selection(index):
+    provider = FakeProvider(
+        '{"tags":["invented_tag","solo","solo"]}',
+        '{"sentences":["A girl stands alone."]}',
+    )
+
+    result = PromptPipeline(index).generate(
+        provider,
+        "a girl",
+        min_tags=2,
+        max_tags=2,
+        general_branches=frozenset({"composition_style"}),
+    )
+
+    assert result.tag_group == "solo,1girl"
+    assert len(provider.calls) == 2
 
 
 def test_rejects_empty_input(index):
@@ -299,7 +330,6 @@ def test_rejects_invalid_generation_limits(index, limits):
 
 def test_retries_when_description_has_too_few_sentences(index):
     provider = FakeProvider(
-        '{"search_terms":["solo"]}',
         '{"tags":["solo"]}',
         '{"sentences":["One sentence."]}',
         '{"sentences":["First sentence.","Second sentence."]}',
@@ -314,4 +344,4 @@ def test_retries_when_description_has_too_few_sentences(index):
     )
 
     assert result.description == "First sentence. Second sentence."
-    assert len(provider.calls) == 4
+    assert len(provider.calls) == 3

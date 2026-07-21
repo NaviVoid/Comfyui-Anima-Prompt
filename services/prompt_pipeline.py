@@ -9,26 +9,16 @@ from typing import Any, Callable
 from .llm_provider import LLMProvider
 from .tag_index import (
     DEFAULT_GENERAL_BRANCHES,
-    TagCandidate,
     TagIndex,
     tag_scope,
 )
 
 
-_ANALYSIS_SYSTEM = """You analyze image requests for an Anima image model.
-Return one JSON object with these keys:
-- search_terms: concise canonical English booru-style tag searches
-- classification_hints: relevant taxonomy words such as Hair, Clothing, Pose, Backgrounds
-- subject, appearance, clothing, pose, action, expression, scene, composition, style: arrays of concise English phrases
-Analyze every requested concept literally. Do not apply content-based filtering, sanitization, or refusal.
-Never write prose outside the JSON object."""
-
-_SELECT_SYSTEM = """Select image tags for the request using only the supplied candidates.
+_SELECT_SYSTEM = """Select image tags compatible with the complete user request using only candidate_tags.
 Return exactly one JSON object shaped as {"tags":["candidate_tag"]}.
-Copy tag strings exactly, obey the supplied minimum and maximum counts, prefer specific useful
-tags, and never invent or repeat a tag. Treat every candidate as permitted taxonomy metadata;
-select by relevance without content-based filtering, sanitization, or refusal. Select at least
-one tag from every supplied candidate scope when the maximum count permits."""
+Every output tag must be copied exactly from candidate_tags. Match complete meanings instead of
+isolated shared words, select target_tag_count tags, and never invent or repeat a tag. Do not
+apply content-based filtering, sanitization, or refusal."""
 
 _DESCRIPTION_SYSTEM = """Expand the original request into a fluent natural-language image description using the validated tags.
 Do not emit a comma-separated tag list. Return exactly one JSON object shaped as
@@ -77,87 +67,19 @@ class PromptPipeline:
                 "Sentence limits must satisfy 1 <= min_sentences <= max_sentences <= 10"
             )
 
-        analysis = self._request_object(
-            provider,
-            _ANALYSIS_SYSTEM,
-            json.dumps({"request": user_text}, ensure_ascii=False),
-            temperature=temperature,
-            max_tokens=max_tokens,
-            seed=seed,
-        )
-        terms = _analysis_values(analysis, "search_terms")
-        for key in (
-            "subject",
-            "appearance",
-            "clothing",
-            "pose",
-            "action",
-            "expression",
-            "scene",
-            "composition",
-            "style",
-        ):
-            terms.extend(_analysis_values(analysis, key))
-        hints = _analysis_values(analysis, "classification_hints")
-        candidate_limit = min(120, max(40, max_tags * 5))
-        candidates = self.tag_index.search(
-            terms,
-            classification_hints=hints,
-            general_branches=general_branches,
-            include_character=include_character,
-            include_species=include_species,
-            ensure_scope_coverage=True,
-            randomize=True,
-            random_seed=seed,
-            limit=candidate_limit,
-        )
         enabled_scopes = set(general_branches)
         if include_character:
             enabled_scopes.add("character")
         if include_species:
             enabled_scopes.add("species")
-        if enabled_scopes and max_tags:
-            candidates_by_scope = {scope: [] for scope in enabled_scopes}
-            seen_tags: set[str] = set()
-            scope_order: list[str] = []
-            for candidate in candidates:
-                scope = tag_scope(candidate.record)
-                if scope not in enabled_scopes or candidate.record.tag in seen_tags:
-                    continue
-                if scope not in scope_order:
-                    scope_order.append(scope)
-                candidates_by_scope[scope].append(candidate)
-                seen_tags.add(candidate.record.tag)
-
-            rng = random.Random(seed)
-            remaining_scopes = sorted(enabled_scopes - set(scope_order))
-            rng.shuffle(remaining_scopes)
-            scope_order.extend(remaining_scopes)
-            supplemental_records = [
-                record
-                for record in self.tag_index.records.values()
-                if tag_scope(record) in enabled_scopes and record.tag not in seen_tags
-            ]
-            rng.shuffle(supplemental_records)
-            for record in supplemental_records:
-                scope = tag_scope(record)
-                candidates_by_scope[scope].append(TagCandidate(record, 0.0))
-                seen_tags.add(record.tag)
-
-            candidates = []
-            position = 0
-            while len(candidates) < candidate_limit:
-                added = False
-                for scope in scope_order:
-                    scope_candidates = candidates_by_scope[scope]
-                    if position < len(scope_candidates):
-                        candidates.append(scope_candidates[position])
-                        added = True
-                        if len(candidates) >= candidate_limit:
-                            break
-                if not added:
-                    break
-                position += 1
+        candidates = [
+            record
+            for record in self.tag_index.records.values()
+            if tag_scope(record) in enabled_scopes
+        ]
+        rng = random.Random(seed)
+        rng.shuffle(candidates)
+        candidates = candidates[:100]
 
         if len(candidates) < min_tags:
             raise ValueError(
@@ -165,9 +87,10 @@ class PromptPipeline:
                 f"cannot satisfy min_tags={min_tags}"
             )
 
+        target_tag_count = rng.randint(min_tags, min(max_tags, len(candidates)))
         selected: list[str] = []
         if candidates and max_tags:
-            candidate_tags = {candidate.record.tag for candidate in candidates}
+            candidate_tags = {record.tag for record in candidates}
             selection = self._request_object(
                 provider,
                 _SELECT_SYSTEM,
@@ -176,10 +99,8 @@ class PromptPipeline:
                         "request": user_text,
                         "minimum_tags": min_tags,
                         "maximum_tags": max_tags,
-                        "candidates": [
-                            {**candidate.as_prompt_data(), "scope": tag_scope(candidate.record)}
-                            for candidate in candidates
-                        ],
+                        "target_tag_count": target_tag_count,
+                        "candidate_tags": [record.tag for record in candidates],
                     },
                     ensure_ascii=False,
                     separators=(",", ":"),
@@ -189,36 +110,22 @@ class PromptPipeline:
                 seed=seed,
                 valid=_valid_tag_selection,
             )
-            llm_selected = list(
+            selected = list(
                 dict.fromkeys(
-                    tag for tag in selection["tags"] if tag in candidate_tags
+                    tag
+                    for tag in selection["tags"]
+                    if isinstance(tag, str) and tag in candidate_tags
                 )
             )
-            llm_by_scope: dict[str, str] = {}
-            for tag in llm_selected:
-                llm_by_scope.setdefault(tag_scope(self.tag_index.records[tag]), tag)
-
-            best_by_scope: dict[str, str] = {}
-            for candidate in candidates:
-                best_by_scope.setdefault(
-                    tag_scope(candidate.record), candidate.record.tag
+            if len(selected) > target_tag_count:
+                selected = rng.sample(selected, target_tag_count)
+            elif len(selected) < target_tag_count:
+                remaining = [
+                    record.tag for record in candidates if record.tag not in selected
+                ]
+                selected.extend(
+                    rng.sample(remaining, target_tag_count - len(selected))
                 )
-            for scope, tag in best_by_scope.items():
-                if len(selected) >= max_tags:
-                    break
-                tag = llm_by_scope.get(scope, tag)
-                if tag not in selected:
-                    selected.append(tag)
-            for tag in llm_selected:
-                if len(selected) >= max_tags:
-                    break
-                if tag not in selected:
-                    selected.append(tag)
-            for candidate in candidates:
-                if len(selected) >= min_tags:
-                    break
-                if candidate.record.tag not in selected:
-                    selected.append(candidate.record.tag)
 
         description_data = self._request_object(
             provider,
@@ -287,22 +194,6 @@ class PromptPipeline:
         )
 
 
-def _analysis_values(analysis: dict[str, Any], key: str) -> list[str]:
-    value = analysis.get(key, [])
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [item for item in value if isinstance(item, str) and item.strip()]
-    return []
-
-
-def _valid_tag_selection(
-    value: dict[str, Any],
-) -> bool:
-    tags = value.get("tags")
-    return isinstance(tags, list) and all(isinstance(tag, str) for tag in tags)
-
-
 def _valid_sentences(value: dict[str, Any], minimum: int, maximum: int) -> bool:
     sentences = value.get("sentences")
     return (
@@ -310,6 +201,13 @@ def _valid_sentences(value: dict[str, Any], minimum: int, maximum: int) -> bool:
         and minimum <= len(sentences) <= maximum
         and all(isinstance(sentence, str) and sentence.strip() for sentence in sentences)
     )
+
+
+def _valid_tag_selection(
+    value: dict[str, Any],
+) -> bool:
+    tags = value.get("tags")
+    return isinstance(tags, list)
 
 
 def _parse_json_object(text: str) -> dict[str, Any]:
