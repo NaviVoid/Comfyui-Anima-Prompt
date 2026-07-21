@@ -237,6 +237,50 @@ def test_search_preserves_recalled_scope_coverage():
     )
 
 
+def test_search_excludes_artistic_license_and_year_tags():
+    index = TagIndex(
+        [
+            TagRecord(
+                "simple_background",
+                0,
+                100,
+                (
+                    "Visual characteristics",
+                    "Image composition and style",
+                    "Image composition",
+                ),
+            ),
+            TagRecord(
+                "alternate_costume",
+                0,
+                90,
+                (
+                    "Visual characteristics",
+                    "Image composition and style",
+                    "Artistic license",
+                ),
+            ),
+            TagRecord(
+                "2024",
+                0,
+                80,
+                (
+                    "Visual characteristics",
+                    "Image composition and style",
+                    "Year tags",
+                ),
+            ),
+        ]
+    )
+
+    assert [
+        candidate.record.tag
+        for candidate in index.search(
+            ["simple_background", "alternate_costume", "2024"]
+        )
+    ] == ["simple_background"]
+
+
 @pytest.mark.parametrize(
     ("bad_row", "message"),
     [

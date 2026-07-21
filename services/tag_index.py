@@ -88,6 +88,11 @@ class TagRecord:
 def tag_scope(record: TagRecord) -> str | None:
     if not record.classifications:
         return None
+    if record.classifications[:3] in (
+        ("Visual characteristics", "Image composition and style", "Artistic license"),
+        ("Visual characteristics", "Image composition and style", "Year tags"),
+    ):
+        return None
     if record.category in CHARACTER_CATEGORIES:
         return "character"
     if record.category in SPECIES_CATEGORIES:

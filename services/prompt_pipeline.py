@@ -128,17 +128,20 @@ class PromptPipeline:
                 candidates_by_scope[scope].append(candidate)
                 seen_tags.add(candidate.record.tag)
 
+            rng = random.Random(seed)
             remaining_scopes = sorted(enabled_scopes - set(scope_order))
-            random.Random(seed).shuffle(remaining_scopes)
+            rng.shuffle(remaining_scopes)
             scope_order.extend(remaining_scopes)
-            for record in sorted(
-                self.tag_index.records.values(),
-                key=lambda record: (-record.post_count, record.tag),
-            ):
+            supplemental_records = [
+                record
+                for record in self.tag_index.records.values()
+                if tag_scope(record) in enabled_scopes and record.tag not in seen_tags
+            ]
+            rng.shuffle(supplemental_records)
+            for record in supplemental_records:
                 scope = tag_scope(record)
-                if scope in enabled_scopes and record.tag not in seen_tags:
-                    candidates_by_scope[scope].append(TagCandidate(record, 0.0))
-                    seen_tags.add(record.tag)
+                candidates_by_scope[scope].append(TagCandidate(record, 0.0))
+                seen_tags.add(record.tag)
 
             candidates = []
             position = 0

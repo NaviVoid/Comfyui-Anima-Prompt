@@ -210,6 +210,35 @@ def test_fills_final_minimum_from_all_enabled_scopes():
     }
 
 
+def test_randomizes_supplemental_candidates_by_seed():
+    index = TagIndex(
+        [
+            TagRecord(f"body_{number}", 0, 100 - number, ("Visual characteristics", "Body"))
+            for number in range(6)
+        ]
+    )
+
+    def generate(seed):
+        provider = FakeProvider(
+            '{"search_terms":[]}',
+            '{"tags":[]}',
+            '{"sentences":["A body is shown."]}',
+        )
+        result = PromptPipeline(index).generate(
+            provider,
+            "a figure",
+            min_tags=1,
+            max_tags=1,
+            seed=seed,
+            general_branches=frozenset({"body"}),
+        )
+        candidates = json.loads(provider.calls[1][1])["candidates"]
+        return result.tag_group, [candidate["tag"] for candidate in candidates]
+
+    assert generate(7) == generate(7)
+    assert generate(7) != generate(8)
+
+
 def test_rejects_unachievable_tag_minimum():
     index = TagIndex(
         [
