@@ -112,7 +112,11 @@ def test_formats_tag_underscores_and_parentheses(index):
     )
 
     result = PromptPipeline(index).generate(
-        provider, "a red hair ribbon", min_tags=1, max_tags=1
+        provider,
+        "a red hair ribbon",
+        min_tags=1,
+        max_tags=1,
+        general_branches=frozenset({"attire_accessories"}),
     )
 
     assert result.tag_group == r"hair ribbon \(red\)"
@@ -143,6 +147,20 @@ def test_selects_one_tag_from_each_recalled_scope(index):
         "classroom",
         "hair_ribbon_(red)",
     }
+
+
+def test_searches_composition_analysis_when_search_terms_exist(index):
+    provider = FakeProvider(
+        '{"search_terms":["classroom"],"composition":["solo"]}',
+        '{"tags":["classroom"]}',
+        '{"sentences":["A lone subject stands in a classroom."]}',
+    )
+
+    result = PromptPipeline(index).generate(
+        provider, "a lone subject in a classroom", min_tags=1, max_tags=2
+    )
+
+    assert set(result.tag_group.split(",")) == {"solo", "classroom"}
 
 
 def test_retries_invalid_structured_response(index):

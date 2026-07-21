@@ -82,19 +82,18 @@ class PromptPipeline:
             seed=seed,
         )
         terms = _analysis_values(analysis, "search_terms")
-        if not terms:
-            for key in (
-                "subject",
-                "appearance",
-                "clothing",
-                "pose",
-                "action",
-                "expression",
-                "scene",
-                "composition",
-                "style",
-            ):
-                terms.extend(_analysis_values(analysis, key))
+        for key in (
+            "subject",
+            "appearance",
+            "clothing",
+            "pose",
+            "action",
+            "expression",
+            "scene",
+            "composition",
+            "style",
+        ):
+            terms.extend(_analysis_values(analysis, key))
         hints = _analysis_values(analysis, "classification_hints")
         candidates = self.tag_index.search(
             terms,
