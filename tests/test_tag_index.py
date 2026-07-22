@@ -246,6 +246,30 @@ def test_promoted_composition_scopes_are_independently_configurable():
     }
 
 
+def test_promoted_sex_scopes_are_independently_configurable():
+    base = ("Visual characteristics", "Sex")
+    index = TagIndex(
+        [
+            TagRecord("vaginal", 0, 3, (*base, "Sex acts")),
+            TagRecord("on_side", 0, 2, (*base, "Sexual positions")),
+            TagRecord("shibari", 0, 1, (*base, "BDSM and torture")),
+        ]
+    )
+    terms = ["vaginal", "on_side", "shibari"]
+
+    assert {
+        scope: {
+            candidate.record.tag
+            for candidate in index.search(terms, general_branches={scope})
+        }
+        for scope in ("bdsm_and_torture", "sex_acts", "sexual_positions")
+    } == {
+        "bdsm_and_torture": {"shibari"},
+        "sex_acts": {"vaginal"},
+        "sexual_positions": {"on_side"},
+    }
+
+
 def test_search_preserves_recalled_scope_coverage():
     index = TagIndex(
         [

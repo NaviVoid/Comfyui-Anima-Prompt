@@ -93,7 +93,13 @@ GENERAL_BRANCH_PATHS = {
     ),
     "plants": (("Visual characteristics", "Plants"),),
     "real_world": (("Visual characteristics", "Real world"),),
-    "sex": (("Visual characteristics", "Sex"),),
+    "bdsm_and_torture": (
+        ("Visual characteristics", "Sex", "BDSM and torture"),
+    ),
+    "sex_acts": (("Visual characteristics", "Sex", "Sex acts"),),
+    "sexual_positions": (
+        ("Visual characteristics", "Sex", "Sexual positions"),
+    ),
 }
 DEFAULT_GENERAL_BRANCHES = frozenset(GENERAL_BRANCH_PATHS)
 GENERAL_CATEGORIES = frozenset({0, 7})

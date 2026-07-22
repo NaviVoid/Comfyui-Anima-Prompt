@@ -38,7 +38,9 @@ def test_comfyui_package_registers_three_nodes():
     assert generator_inputs["required"]["max_tags"][1]["max"] == 50
     assert generator_inputs["required"]["min_sentences"][1]["min"] == 1
     assert generator_inputs["required"]["max_sentences"][1]["max"] == 10
-    assert generator_inputs["optional"]["general_body"][1]["default"] is True
+    optional_inputs = generator_inputs["optional"]
+    assert list(optional_inputs) == sorted(optional_inputs)
+    assert optional_inputs["general_body"][1]["default"] is True
     assert "general_objects" not in generator_inputs["optional"]
     assert "general_misc" not in generator_inputs["optional"]
     assert generator_inputs["optional"]["general_weapons"][1]["default"] is True
@@ -52,6 +54,10 @@ def test_comfyui_package_registers_three_nodes():
     )
     assert "general_media_taxonomy" not in generator_inputs["optional"]
     assert "general_metatags" not in generator_inputs["optional"]
+    assert "general_sex" not in optional_inputs
+    assert optional_inputs["general_bdsm_and_torture"][1]["default"] is True
+    assert optional_inputs["general_sex_acts"][1]["default"] is True
+    assert optional_inputs["general_sexual_positions"][1]["default"] is True
     assert generator_inputs["optional"]["include_character_tags"][1]["default"] is False
     assert generator_inputs["optional"]["include_species_tags"][1]["default"] is False
 
