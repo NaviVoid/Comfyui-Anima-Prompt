@@ -3,7 +3,7 @@ import json
 import pytest
 
 from services.prompt_pipeline import PromptPipeline
-from services.tag_index import TagIndex, TagRecord, tag_scope
+from services.tag_index import TagIndex, TagRecord, tag_scope, tag_switch
 
 
 class FakeProvider:
@@ -121,6 +121,47 @@ def test_generates_description_when_no_candidate_exists(index):
     assert result.tag_group == ""
     assert result.prompt == result.description
     assert len(provider.calls) == 1
+
+
+def test_filters_tag_switches_and_only_guarantees_their_groups():
+    index = TagIndex(
+        [
+            TagRecord(
+                "rose", 0, 3, ("Visual characteristics", "Plants", "Flowers")
+            ),
+            TagRecord(
+                "wolf",
+                0,
+                2,
+                ("Visual characteristics", "Creatures", "List of animals"),
+            ),
+            TagRecord(
+                "long_hair",
+                0,
+                1,
+                ("Visual characteristics", "Body", "Body parts"),
+            ),
+        ]
+    )
+    enabled = frozenset(tag_switch(record) for record in index.records.values())
+    provider = FakeProvider(
+        '{"tags":["rose","long_hair"]}',
+        '{"sentences":["A long-haired figure holds a rose."]}',
+    )
+
+    result = PromptPipeline(index).generate(
+        provider,
+        "long hair and a rose",
+        min_tags=2,
+        max_tags=2,
+        tag_switches=enabled,
+        seed=42,
+    )
+
+    candidates = json.loads(provider.calls[0][1])["candidate_tags_by_scope"]
+    assert set(candidates) == {"living_nature", "subject_appearance"}
+    assert "wolf" in candidates["living_nature"]
+    assert set(result.tag_group.split(",")) == {"rose", "long hair"}
 
 
 def test_formats_tag_underscores_and_parentheses(index):

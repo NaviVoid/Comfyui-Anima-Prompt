@@ -13,6 +13,8 @@ from .tag_index import (
     TagRecord,
     normalize_term,
     tag_scope,
+    tag_switch,
+    tag_switch_group,
 )
 
 
@@ -59,6 +61,7 @@ class PromptPipeline:
         max_tokens: int = 1024,
         seed: int | None = None,
         general_branches: frozenset[str] = DEFAULT_GENERAL_BRANCHES,
+        tag_switches: frozenset[str] | None = None,
         include_character: bool = False,
         include_species: bool = False,
     ) -> PromptResult:
@@ -72,21 +75,43 @@ class PromptPipeline:
                 "Sentence limits must satisfy 1 <= min_sentences <= max_sentences <= 10"
             )
 
+        enabled_switches = None if tag_switches is None else frozenset(tag_switches)
+        unknown_switches = (
+            frozenset()
+            if enabled_switches is None
+            else enabled_switches - self.tag_index.tag_switches
+        )
+        if unknown_switches:
+            raise ValueError(
+                f"Unknown tag switches: {', '.join(sorted(unknown_switches))}"
+            )
         enabled_scopes = set(general_branches)
         if include_character:
             enabled_scopes.add("character")
         if include_species:
             enabled_scopes.add("species")
+
+        def selected_scope(record: TagRecord) -> str | None:
+            if enabled_switches is not None:
+                switch = tag_switch(record)
+                return (
+                    tag_switch_group(switch)
+                    if switch is not None and switch in enabled_switches
+                    else None
+                )
+            scope = tag_scope(record)
+            return scope if scope in enabled_scopes else None
+
         all_candidates = [
             record
             for record in self.tag_index.records.values()
-            if tag_scope(record) in enabled_scopes
+            if selected_scope(record) is not None
         ]
         rng = random.Random(seed)
         rng.shuffle(all_candidates)
         candidates_by_scope: dict[str, list[TagRecord]] = {}
         for record in all_candidates:
-            scope = tag_scope(record)
+            scope = selected_scope(record)
             if scope is not None:
                 candidates_by_scope.setdefault(scope, []).append(record)
 
@@ -112,6 +137,7 @@ class PromptPipeline:
         recalled = self.tag_index.search(
             normalize_term(user_text).split("_"),
             general_branches=general_branches,
+            tag_switches=enabled_switches,
             include_character=include_character,
             include_species=include_species,
             limit=100,
@@ -150,7 +176,7 @@ class PromptPipeline:
         if candidates and max_tags:
             candidate_tags_by_scope: dict[str, list[str]] = {}
             for record in candidates:
-                scope = tag_scope(record)
+                scope = selected_scope(record)
                 if scope is not None:
                     candidate_tags_by_scope.setdefault(scope, []).append(record.tag)
             selection = self._request_object(
@@ -181,7 +207,7 @@ class PromptPipeline:
                 )
             )
             selected_scopes = {
-                tag_scope(self.tag_index.records[tag]) for tag in selected
+                selected_scope(self.tag_index.records[tag]) for tag in selected
             }
             for scope, records in candidates_by_scope.items():
                 if scope not in selected_scopes:
@@ -192,7 +218,7 @@ class PromptPipeline:
                 protected: set[str] = set()
                 protected_scopes: set[str] = set()
                 for tag in selected:
-                    scope = tag_scope(self.tag_index.records[tag])
+                    scope = selected_scope(self.tag_index.records[tag])
                     if scope not in protected_scopes:
                         protected.add(tag)
                         protected_scopes.add(scope)

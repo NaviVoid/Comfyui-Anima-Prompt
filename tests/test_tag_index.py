@@ -9,6 +9,7 @@ from services.tag_index import (
     TagRecord,
     load_tag_index,
     parse_tag_csv,
+    tag_switch,
 )
 
 
@@ -268,6 +269,39 @@ def test_promoted_sex_scopes_are_independently_configurable():
         "sex_acts": {"vaginal"},
         "sexual_positions": {"on_side"},
     }
+
+
+def test_tag_switches_partition_child_and_direct_parent_tags():
+    base = ("Visual characteristics", "Image composition and style")
+    index = TagIndex(
+        [
+            TagRecord("solo", 0, 3, base),
+            TagRecord("heart", 0, 2, (*base, "Symbols")),
+            TagRecord(
+                "border",
+                0,
+                1,
+                (*base, "Image composition", "Composition"),
+            ),
+        ]
+    )
+    switches = {tag: tag_switch(record) for tag, record in index.records.items()}
+
+    assert switches == {
+        "solo": "visual_composition.composition_style.image_composition_and_style",
+        "heart": "visual_composition.composition_style.symbols",
+        "border": "visual_composition.composition.composition",
+    }
+    assert index.tag_switches == frozenset(switches.values())
+    assert [
+        candidate.record.tag
+        for candidate in index.search(
+            ["solo", "heart", "border"],
+            tag_switches={switches["solo"]},
+        )
+    ] == ["solo"]
+    with pytest.raises(ValueError, match="Unknown tag switches"):
+        index.search(["solo"], tag_switches={"visual_composition.unknown"})
 
 
 def test_search_preserves_recalled_scope_coverage():

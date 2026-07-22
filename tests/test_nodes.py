@@ -19,13 +19,19 @@ def load_package():
     return module
 
 
-def test_comfyui_package_registers_three_nodes():
+def test_comfyui_package_registers_switch_nodes():
     module = load_package()
 
     assert set(module.NODE_CLASS_MAPPINGS) == {
+        "AnimaAdultContentSwitches",
+        "AnimaLivingNatureSwitches",
         "AnimaLocalLLMLoader",
+        "AnimaObjectsEquipmentSwitches",
         "AnimaOpenAILLMLoader",
         "AnimaPromptGenerator",
+        "AnimaScenesActivitiesCultureSwitches",
+        "AnimaSubjectAppearanceSwitches",
+        "AnimaVisualCompositionSwitches",
     }
     assert module.NODE_CLASS_MAPPINGS["AnimaLocalLLMLoader"].RETURN_TYPES == (
         "ANIMA_LLM",
@@ -38,28 +44,61 @@ def test_comfyui_package_registers_three_nodes():
     assert generator_inputs["required"]["max_tags"][1]["max"] == 50
     assert generator_inputs["required"]["min_sentences"][1]["min"] == 1
     assert generator_inputs["required"]["max_sentences"][1]["max"] == 10
-    optional_inputs = generator_inputs["optional"]
-    assert list(optional_inputs) == sorted(optional_inputs)
-    assert optional_inputs["general_body"][1]["default"] is True
-    assert "general_objects" not in generator_inputs["optional"]
-    assert "general_misc" not in generator_inputs["optional"]
-    assert generator_inputs["optional"]["general_weapons"][1]["default"] is True
-    assert generator_inputs["optional"]["general_food"][1]["default"] is True
-    assert generator_inputs["optional"]["general_view_angle"][1]["default"] is True
-    assert generator_inputs["optional"]["general_composition"][1]["default"] is True
-    assert generator_inputs["optional"]["general_lighting"][1]["default"] is True
-    assert (
-        generator_inputs["optional"]["general_perspective_depth"][1]["default"]
-        is True
+    assert generator_inputs["required"]["switch_list"] == (
+        "ANIMA_TAG_SWITCH_LIST",
     )
-    assert "general_media_taxonomy" not in generator_inputs["optional"]
-    assert "general_metatags" not in generator_inputs["optional"]
-    assert "general_sex" not in optional_inputs
-    assert optional_inputs["general_bdsm_and_torture"][1]["default"] is True
-    assert optional_inputs["general_sex_acts"][1]["default"] is True
-    assert optional_inputs["general_sexual_positions"][1]["default"] is True
-    assert generator_inputs["optional"]["include_character_tags"][1]["default"] is False
-    assert generator_inputs["optional"]["include_species_tags"][1]["default"] is False
+    assert "optional" not in generator_inputs
+
+    expected_counts = {
+        "AnimaAdultContentSwitches": 19,
+        "AnimaLivingNatureSwitches": 3,
+        "AnimaObjectsEquipmentSwitches": 29,
+        "AnimaScenesActivitiesCultureSwitches": 31,
+        "AnimaSubjectAppearanceSwitches": 10,
+        "AnimaVisualCompositionSwitches": 13,
+    }
+    for name, count in expected_counts.items():
+        node = module.NODE_CLASS_MAPPINGS[name]
+        inputs = node.INPUT_TYPES()
+        assert node.RETURN_TYPES == ("ANIMA_TAG_SWITCH_LIST",)
+        assert len(inputs["required"]) == count
+        assert list(inputs["required"]) == sorted(inputs["required"])
+        assert all(value[1]["default"] is True for value in inputs["required"].values())
+        assert inputs["optional"] == {
+            "switch_list": ("ANIMA_TAG_SWITCH_LIST",)
+        }
+    assert list(
+        module.NODE_CLASS_MAPPINGS["AnimaLivingNatureSwitches"]
+        .INPUT_TYPES()["required"]
+    ) == ["flowers", "legendary_creatures", "list_of_animals"]
+
+
+def test_switch_nodes_chain_and_replace_their_group():
+    module = load_package()
+    living = module.NODE_CLASS_MAPPINGS["AnimaLivingNatureSwitches"]()
+    subject = module.NODE_CLASS_MAPPINGS["AnimaSubjectAppearanceSwitches"]()
+    living_values = {
+        name: name == "list_of_animals"
+        for name in living.INPUT_TYPES()["required"]
+    }
+    subject_values = {
+        name: name == "body_parts"
+        for name in subject.INPUT_TYPES()["required"]
+    }
+
+    first = living.build(**living_values)[0]
+    second = subject.build(first, **subject_values)[0]
+    replaced = living.build(
+        second,
+        **{name: False for name in living.INPUT_TYPES()["required"]},
+    )[0]
+
+    assert {switch.rsplit(".", 1)[-1] for switch in first} == {"list_of_animals"}
+    assert {switch.split(".", 1)[0] for switch in second} == {
+        "living_nature",
+        "subject_appearance",
+    }
+    assert {switch.rsplit(".", 1)[-1] for switch in replaced} == {"body_parts"}
 
 
 def test_openai_loader_is_lazy():

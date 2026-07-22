@@ -102,6 +102,30 @@ GENERAL_BRANCH_PATHS = {
     ),
 }
 DEFAULT_GENERAL_BRANCHES = frozenset(GENERAL_BRANCH_PATHS)
+TAG_SWITCH_GROUP_SCOPES = {
+    "visual_composition": (
+        "composition",
+        "composition_style",
+        "lighting",
+        "perspective_depth",
+        "view_angle",
+    ),
+    "subject_appearance": ("attire_accessories", "body"),
+    "living_nature": ("creatures", "plants"),
+    "scenes_activities_culture": ("actions", "food", "games", "real_world"),
+    "objects_equipment": ("misc_objects", "vehicles", "weapons"),
+    "adult_content": (
+        "bdsm_and_torture",
+        "sex_acts",
+        "sex_objects",
+        "sexual_positions",
+    ),
+}
+TAG_SWITCH_SCOPE_GROUP = {
+    scope: group
+    for group, scopes in TAG_SWITCH_GROUP_SCOPES.items()
+    for scope in scopes
+}
 GENERAL_CATEGORIES = frozenset({0, 7})
 CHARACTER_CATEGORIES = frozenset({4, 11})
 SPECIES_CATEGORIES = frozenset({12})
@@ -166,6 +190,30 @@ def normalize_term(value: str) -> str:
     return _NON_WORD.sub("_", value.casefold()).strip("_")
 
 
+def tag_switch(record: TagRecord) -> str | None:
+    scope = tag_scope(record)
+    group = TAG_SWITCH_SCOPE_GROUP.get(scope or "")
+    if group is None:
+        return None
+
+    paths = GENERAL_BRANCH_PATHS[scope]
+    base = next(
+        path
+        for path in paths
+        if record.classifications[: len(path)] == path
+    )
+    switch_path = (
+        base
+        if len(paths) > 1 or len(record.classifications) == len(base)
+        else record.classifications[: len(base) + 1]
+    )
+    return f"{group}.{scope}.{normalize_term(switch_path[-1])}"
+
+
+def tag_switch_group(switch: str) -> str:
+    return switch.partition(".")[0]
+
+
 def _tokens(value: str) -> tuple[str, ...]:
     return tuple(token for token in normalize_term(value).split("_") if token)
 
@@ -177,6 +225,7 @@ class TagIndex:
         self._normalized: dict[str, TagRecord] = {}
         self._token_index: dict[str, list[TagRecord]] = {}
         self._classification_index: dict[str, list[TagRecord]] = {}
+        switches: set[str] = set()
         self.classified_count = 0
         self.max_classification_depth = 0
 
@@ -203,6 +252,10 @@ class TagIndex:
                 classification_terms.update(_tokens(part))
             for term in classification_terms:
                 self._classification_index.setdefault(term, []).append(record)
+            switch = tag_switch(record)
+            if switch is not None:
+                switches.add(switch)
+        self.tag_switches = frozenset(switches)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -216,6 +269,7 @@ class TagIndex:
         *,
         classification_hints: Iterable[str] = (),
         general_branches: Iterable[str] = DEFAULT_GENERAL_BRANCHES,
+        tag_switches: Iterable[str] | None = None,
         include_character: bool = False,
         include_species: bool = False,
         ensure_scope_coverage: bool = False,
@@ -232,14 +286,34 @@ class TagIndex:
             raise ValueError(
                 f"Unknown General branches: {', '.join(sorted(unknown_branches))}"
             )
+        allowed_switches = (
+            None if tag_switches is None else frozenset(tag_switches)
+        )
+        unknown_switches = (
+            frozenset() if allowed_switches is None else allowed_switches - self.tag_switches
+        )
+        if unknown_switches:
+            raise ValueError(
+                f"Unknown tag switches: {', '.join(sorted(unknown_switches))}"
+            )
 
-        def allowed(record: TagRecord) -> bool:
+        def selected_scope(record: TagRecord) -> str | None:
+            if allowed_switches is not None:
+                switch = tag_switch(record)
+                return (
+                    tag_switch_group(switch)
+                    if switch is not None and switch in allowed_switches
+                    else None
+                )
             scope = tag_scope(record)
             if scope == "character":
-                return include_character
+                return scope if include_character else None
             if scope == "species":
-                return include_species
-            return scope in allowed_general
+                return scope if include_species else None
+            return scope if scope in allowed_general else None
+
+        def allowed(record: TagRecord) -> bool:
+            return selected_scope(record) is not None
 
         query_terms = list(
             dict.fromkeys(normalize_term(term) for term in terms if normalize_term(term))
@@ -301,7 +375,7 @@ class TagIndex:
         covered: list[TagCandidate] = []
         covered_scopes: set[str] = set()
         for candidate in ranked:
-            scope = tag_scope(candidate.record)
+            scope = selected_scope(candidate.record)
             if scope is not None and scope not in covered_scopes:
                 covered.append(candidate)
                 covered_scopes.add(scope)

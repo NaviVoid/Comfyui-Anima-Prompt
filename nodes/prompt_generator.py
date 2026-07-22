@@ -7,28 +7,6 @@ from ..services.tag_index import load_tag_index
 
 
 _DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "tags.csv"
-_GENERAL_TOGGLES = dict(sorted({
-    "general_actions": "actions",
-    "general_attire_accessories": "attire_accessories",
-    "general_bdsm_and_torture": "bdsm_and_torture",
-    "general_body": "body",
-    "general_composition": "composition",
-    "general_composition_style": "composition_style",
-    "general_creatures": "creatures",
-    "general_food": "food",
-    "general_games": "games",
-    "general_lighting": "lighting",
-    "general_misc_objects": "misc_objects",
-    "general_perspective_depth": "perspective_depth",
-    "general_plants": "plants",
-    "general_real_world": "real_world",
-    "general_sex_acts": "sex_acts",
-    "general_sex_objects": "sex_objects",
-    "general_sexual_positions": "sexual_positions",
-    "general_vehicles": "vehicles",
-    "general_view_angle": "view_angle",
-    "general_weapons": "weapons",
-}.items()))
 
 
 class AnimaPromptGenerator:
@@ -42,6 +20,7 @@ class AnimaPromptGenerator:
         return {
             "required": {
                 "llm": ("ANIMA_LLM",),
+                "switch_list": ("ANIMA_TAG_SWITCH_LIST",),
                 "user_text": (
                     "STRING",
                     {"default": "", "multiline": True, "dynamicPrompts": False},
@@ -60,19 +39,12 @@ class AnimaPromptGenerator:
                 ),
                 "seed": ("INT", {"default": -1, "min": -1, "max": 0xFFFFFFFF}),
             },
-            "optional": {
-                **{
-                    name: ("BOOLEAN", {"default": True})
-                    for name in _GENERAL_TOGGLES
-                },
-                "include_character_tags": ("BOOLEAN", {"default": False}),
-                "include_species_tags": ("BOOLEAN", {"default": False}),
-            },
         }
 
     def generate(
         self,
         llm,
+        switch_list,
         user_text: str,
         min_tags: int,
         max_tags: int,
@@ -81,31 +53,8 @@ class AnimaPromptGenerator:
         temperature: float,
         max_tokens: int,
         seed: int,
-        general_actions: bool = True,
-        general_attire_accessories: bool = True,
-        general_bdsm_and_torture: bool = True,
-        general_body: bool = True,
-        general_composition: bool = True,
-        general_composition_style: bool = True,
-        general_creatures: bool = True,
-        general_food: bool = True,
-        general_games: bool = True,
-        general_lighting: bool = True,
-        general_misc_objects: bool = True,
-        general_perspective_depth: bool = True,
-        general_plants: bool = True,
-        general_real_world: bool = True,
-        general_sex_acts: bool = True,
-        general_sex_objects: bool = True,
-        general_sexual_positions: bool = True,
-        general_vehicles: bool = True,
-        general_view_angle: bool = True,
-        general_weapons: bool = True,
-        include_character_tags: bool = False,
-        include_species_tags: bool = False,
     ):
         index = load_tag_index(_DATA_PATH)
-        toggle_values = locals()
         result = PromptPipeline(index).generate(
             llm,
             user_text,
@@ -116,12 +65,6 @@ class AnimaPromptGenerator:
             temperature=temperature,
             max_tokens=max_tokens,
             seed=None if seed < 0 else seed,
-            general_branches=frozenset(
-                branch
-                for name, branch in _GENERAL_TOGGLES.items()
-                if toggle_values[name]
-            ),
-            include_character=include_character_tags,
-            include_species=include_species_tags,
+            tag_switches=frozenset(switch_list),
         )
         return result.prompt, result.tag_group, result.description
